@@ -57,7 +57,9 @@ target_compile_definitions(LynxIOS PRIVATE
     JUCE_PLUGINHOST_VST3=0
     JUCE_PLUGINHOST_AU=0
     JUCE_USE_MP3AUDIOFORMAT=0
-    LYNX_VERSION="${PROJECT_VERSION}"
+    # the same definitions the desktop app gets (src/engine/ProjectFile.cpp writes the version into saved projects)
+    JUCE_APPLICATION_NAME_STRING="$<TARGET_PROPERTY:LynxIOS,JUCE_PRODUCT_NAME>"
+    JUCE_APPLICATION_VERSION_STRING="$<TARGET_PROPERTY:LynxIOS,JUCE_VERSION>"
     LYNX_IOS=1)
 
 target_link_libraries(LynxIOS
