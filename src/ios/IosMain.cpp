@@ -23,7 +23,7 @@ public:
         auto area = juce::Rectangle<int> (0, 0, 1024, 768);
 
         if (auto* display = juce::Desktop::getInstance().getDisplays().getPrimaryDisplay())
-            area = display->userBounds.toNearestInt();
+            area = display->userArea;
 
         setBounds (area);
         setVisible (true);
