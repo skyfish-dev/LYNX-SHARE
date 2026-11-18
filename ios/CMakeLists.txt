@@ -70,6 +70,10 @@ target_link_libraries(LynxIOS
     PUBLIC
         juce::juce_recommended_config_flags)
 
+# juce_gui_basics' iOS code references UNUserNotificationCenter without declaring the framework
+find_library(LYNX_IOS_USER_NOTIFICATIONS UserNotifications REQUIRED)
+target_link_libraries(LynxIOS PRIVATE ${LYNX_IOS_USER_NOTIFICATIONS})
+
 # iPhone and iPad, and no bitcode (deprecated since Xcode 14)
 set_target_properties(LynxIOS PROPERTIES
     XCODE_ATTRIBUTE_TARGETED_DEVICE_FAMILY "1,2"
