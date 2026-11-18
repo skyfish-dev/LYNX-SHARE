@@ -78,3 +78,70 @@ jobs:
           path: LYNX-unsigned.ipa
           if-no-files-found: error
           retention-days: 30
+
+  # The .ipa cannot be run on the runner, so the same build is launched in the Simulator: it catches a crash or an
+  # empty window before the app reaches a device. The screenshot is kept as an artifact.
+  simulator:
+    name: Simulator smoke test
+    runs-on: macos-15
+    timeout-minutes: 120
+    needs: ipa
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Configure (iOS Simulator arm64)
+        run: |
+          cmake -S . -B build-sim -G Xcode \
+            -DCMAKE_SYSTEM_NAME=iOS \
+            -DCMAKE_OSX_SYSROOT=iphonesimulator \
+            -DCMAKE_OSX_DEPLOYMENT_TARGET=15.0 \
+            -DCMAKE_OSX_ARCHITECTURES=arm64 \
+            -DLYNX_LTO=OFF
+
+      - name: Build
+        run: |
+          set -o pipefail
+          cmake --build build-sim --config Release --target LynxIOS -- -sdk iphonesimulator -quiet
+
+      - name: Boot a simulator, install and launch LYNX
+        run: |
+          set -euo pipefail
+          UDID=$(xcrun simctl list devices available -j | python3 -c '
+          import json, sys
+          devices = json.load (sys.stdin)["devices"]
+          for runtime in sorted (devices):
+              for device in devices[runtime]:
+                  if device["name"].startswith ("iPhone"):
+                      print (device["udid"])
+                      raise SystemExit
+          ')
+          echo "Simulator: $UDID"
+          xcrun simctl boot "$UDID" || true
+          xcrun simctl bootstatus "$UDID" -b
+          APP=$(find build-sim -type d -name "LYNX.app" | head -n 1)
+          echo "App: $APP"
+          xcrun simctl install "$UDID" "$APP"
+          xcrun simctl launch "$UDID" com.ka1-s.lynx.ios
+          sleep 12
+          xcrun simctl io "$UDID" screenshot lynx-screen.png
+          # the app must still be running: a crash would remove it from launchd's list
+          if ! xcrun simctl spawn "$UDID" launchctl list | grep -q "com.ka1-s.lynx.ios"; then
+            echo "LYNX is no longer running"
+            exit 1
+          fi
+          echo "LYNX is running"
+
+      - name: Crash logs
+        if: failure()
+        run: |
+          ls -lt ~/Library/Logs/DiagnosticReports | head -n 20 || true
+          find ~/Library/Logs/DiagnosticReports -name "LYNX*" -newermt "-30 minutes" -exec cat {} \; || true
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: LYNX-simulator-screenshot
+          path: lynx-screen.png
+          if-no-files-found: warn
+          retention-days: 30
