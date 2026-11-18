@@ -1,0 +1,80 @@
+name: iOS
+
+# Builds an unsigned .ipa for iPhone/iPad on a macOS runner. Install it with AltStore, Sideloadly or Xcode
+# (see docs/IOS.md). No Apple Developer account is needed to build; signing happens when you install.
+
+on:
+  workflow_dispatch:
+  push:
+    paths:
+      - "ios/**"
+      - "src/ios/**"
+      - "CMakeLists.txt"
+      - ".github/workflows/ios.yml"
+  pull_request:
+    paths:
+      - "ios/**"
+      - "src/ios/**"
+      - "CMakeLists.txt"
+      - ".github/workflows/ios.yml"
+
+jobs:
+  ipa:
+    name: Build LYNX SHARE (unsigned .ipa)
+    runs-on: macos-15
+    timeout-minutes: 180
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Toolchain
+        run: |
+          cmake --version
+          xcodebuild -version
+          xcodebuild -showsdks | grep iphoneos
+
+      - name: Configure (iOS arm64)
+        run: |
+          cmake -S . -B build-ios -G Xcode \
+            -DCMAKE_SYSTEM_NAME=iOS \
+            -DCMAKE_OSX_SYSROOT=iphoneos \
+            -DCMAKE_OSX_DEPLOYMENT_TARGET=15.0 \
+            -DCMAKE_OSX_ARCHITECTURES=arm64 \
+            -DLYNX_LTO=OFF \
+            -DCMAKE_XCODE_ATTRIBUTE_CODE_SIGNING_ALLOWED=NO \
+            -DCMAKE_XCODE_ATTRIBUTE_CODE_SIGNING_REQUIRED=NO \
+            "-DCMAKE_XCODE_ATTRIBUTE_CODE_SIGN_IDENTITY="
+
+      - name: Build
+        run: |
+          set -o pipefail
+          cmake --build build-ios --config Release --target LynxIOS -- -sdk iphoneos -quiet
+
+      - name: Package unsigned .ipa
+        run: |
+          set -euo pipefail
+          # JUCE's artefacts folder and the plain Xcode layout are both searched
+          APP=$(find build-ios -type d -name "LYNX.app" -path "*iphoneos*" | head -n 1)
+          if [ -z "$APP" ]; then
+            APP=$(find build-ios -type d -name "LYNX.app" | head -n 1)
+          fi
+          if [ -z "$APP" ]; then
+            echo "LYNX.app was not produced; build products:"
+            find build-ios -name "*.app" | head -n 20
+            exit 1
+          fi
+          echo "App: $APP"
+          /usr/libexec/PlistBuddy -c "Print :CFBundleIdentifier" "$APP/Info.plist" || true
+          /usr/libexec/PlistBuddy -c "Print :MinimumOSVersion" "$APP/Info.plist" || true
+          rm -rf Payload LYNX-unsigned.ipa
+          mkdir -p Payload
+          cp -R "$APP" Payload/
+          zip -qry LYNX-unsigned.ipa Payload
+          ls -lh LYNX-unsigned.ipa
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: LYNX-unsigned-ipa
+          path: LYNX-unsigned.ipa
+          if-no-files-found: error
+          retention-days: 30

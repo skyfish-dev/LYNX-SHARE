@@ -384,38 +384,46 @@ target_compile_options(vorbis_decoder PRIVATE $<$<NOT:$<C_COMPILER_ID:MSVC>>:-ff
     $<IF:$<C_COMPILER_ID:MSVC>,/FI${CMAKE_CURRENT_SOURCE_DIR}/third_party/vorbis/include/lynx_vorbis_prefix.h,-include${CMAKE_CURRENT_SOURCE_DIR}/third_party/vorbis/include/lynx_vorbis_prefix.h>)
 target_link_libraries(lynx_core PUBLIC vorbis_decoder)
 
-add_executable(lynx_tests tests/tests.cpp)
-target_link_libraries(lynx_tests PRIVATE lynx_core)
-add_executable(lynx_remote_playlist_tests tests/RemotePlaylistEditsTests.cpp)
-target_link_libraries(lynx_remote_playlist_tests PRIVATE lynx_core)
-add_executable(lynx_remote_instrument_tests tests/RemoteInstrumentEditsTests.cpp)
-target_link_libraries(lynx_remote_instrument_tests PRIVATE lynx_core)
-add_executable(lynx_remote_pattern_tests tests/RemotePatternEditsTests.cpp)
-target_link_libraries(lynx_remote_pattern_tests PRIVATE lynx_core)
+# the headless tests and tools are desktop-only (no fork/exec on iOS)
+if(NOT IOS)
+    add_executable(lynx_tests tests/tests.cpp)
+    target_link_libraries(lynx_tests PRIVATE lynx_core)
+    add_executable(lynx_remote_playlist_tests tests/RemotePlaylistEditsTests.cpp)
+    target_link_libraries(lynx_remote_playlist_tests PRIVATE lynx_core)
+    add_executable(lynx_remote_instrument_tests tests/RemoteInstrumentEditsTests.cpp)
+    target_link_libraries(lynx_remote_instrument_tests PRIVATE lynx_core)
+    add_executable(lynx_remote_pattern_tests tests/RemotePatternEditsTests.cpp)
+    target_link_libraries(lynx_remote_pattern_tests PRIVATE lynx_core)
 
-add_executable(flpdump tools/flpdump.cpp)
-target_link_libraries(flpdump PRIVATE lynx_core)
+    add_executable(flpdump tools/flpdump.cpp)
+    target_link_libraries(flpdump PRIVATE lynx_core)
 
-add_executable(renderwav tools/renderwav.cpp)
-target_link_libraries(renderwav PRIVATE lynx_core)
+    add_executable(renderwav tools/renderwav.cpp)
+    target_link_libraries(renderwav PRIVATE lynx_core)
 
-# the audio engine's CPU per block, headless (round 190ge): perfbench <scenario> [--block N] [--threads N] ...
-add_executable(perfbench tools/perfbench.cpp)
-target_link_libraries(perfbench PRIVATE lynx_core)
-target_include_directories(perfbench PRIVATE tools)
+    # the audio engine's CPU per block, headless (round 190ge): perfbench <scenario> [--block N] [--threads N] ...
+    add_executable(perfbench tools/perfbench.cpp)
+    target_link_libraries(perfbench PRIVATE lynx_core)
+    target_include_directories(perfbench PRIVATE tools)
 
-enable_testing()
-add_test(NAME lynx_tests COMMAND lynx_tests)
-add_test(NAME lynx_remote_playlist_tests COMMAND lynx_remote_playlist_tests)
-add_test(NAME lynx_remote_instrument_tests COMMAND lynx_remote_instrument_tests)
-add_test(NAME lynx_remote_pattern_tests COMMAND lynx_remote_pattern_tests)
+    enable_testing()
+    add_test(NAME lynx_tests COMMAND lynx_tests)
+    add_test(NAME lynx_remote_playlist_tests COMMAND lynx_remote_playlist_tests)
+    add_test(NAME lynx_remote_instrument_tests COMMAND lynx_remote_instrument_tests)
+    add_test(NAME lynx_remote_pattern_tests COMMAND lynx_remote_pattern_tests)
+endif()
 
 # ---------------------------------------------------------------------------
 # App (JUCE)
 
 option(LYNX_BUILD_APP "Build the app with JUCE" ON)
 
-if(LYNX_BUILD_APP)
+# iOS: the desktop app (VST3/AU hosting, ASIO, multi-window UI) does not apply; ios/CMakeLists.txt builds its own target
+if(IOS)
+    set(LYNX_BUILD_APP OFF)
+endif()
+
+if(LYNX_BUILD_APP OR IOS)
     include(FetchContent)
     FetchContent_Declare(
         JUCE
@@ -430,7 +438,13 @@ if(LYNX_BUILD_APP)
         include(${CMAKE_CURRENT_SOURCE_DIR}/cmake/LynxPatchJuce.cmake)
         lynx_patch_juce("${juce_SOURCE_DIR}")
     endif()
+endif()
 
+if(IOS)
+    add_subdirectory(ios)
+endif()
+
+if(LYNX_BUILD_APP)
     juce_add_gui_app(LYNX
         PRODUCT_NAME "LYNX"
         COMPANY_NAME "Ka1-S"
