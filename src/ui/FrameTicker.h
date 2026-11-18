@@ -62,6 +62,13 @@ public:
         static std::atomic<int> n { 0 };
         return n;
     }
+    // round 190ld (FL's CPU panel › View FPS): display frames in which at least one view moved, counted once per frame
+    // however many tickers ran in it (message thread)
+    static int& framesMoved()
+    {
+        static int n = 0;
+        return n;
+    }
 
     // Settings › General › Animation rate (round 174e2): 0 = the display's refresh, else at most this many frames a
     // second (60, 30) for every ticker, still on the display's vertical blanks; -1 = Balanced (round 190ip: the refresh
@@ -140,7 +147,14 @@ private:
         }
 
         if (owner.isShowing() && run (nowMs))
+        {
             quiet = 0;
+            if (frameMs != lastMovedFrameMs())
+            {
+                lastMovedFrameMs() = frameMs;
+                ++framesMoved();
+            }
+        }
         else
             ++quiet; // (detached by the timer: not from inside the attachment's own callback)
     }
@@ -156,6 +170,12 @@ private:
     {
         static std::map<int, framepace::Divider> dividers;
         return dividers[n];
+    }
+
+    static double& lastMovedFrameMs()
+    {
+        static double ms = -1.0; // (message thread)
+        return ms;
     }
 
     static double& framePeriodMs()

@@ -37,7 +37,7 @@ void MainComponent::setUpLookParts()
     lookPartsReady = true;
     for (auto* c : std::initializer_list<juce::Component*> { &signatureBox, &quantBox, &saveStatus, &moreButton, &browserToggleButton,
                                                              &backToArrangementButton, &captureButton, &sessionRecordButton, &drawModeButton,
-                                                             &keyMapButton, &midiMapButton, &sessionViewButton, &arrangementViewButton })
+                                                             &keyMapButton, &midiMapButton, &sessionViewButton, &arrangementViewButton, &cycleButton })
     {
         addChildComponent (c);
         c->setMouseClickGrabsKeyboardFocus (false);
@@ -90,12 +90,36 @@ void MainComponent::setUpLookParts()
     arrangementViewButton.onClick = [this] { setClipGridView (PlaylistArea::GridView::song); };
 
     saveStatus.onSave = [this] { save (false); };
+
+    // round 190ld (details DS-2, BandLab B07: ⟳ after Record in the transport capsule): the Playlist's loop switch
+    const auto cycleText = tr ("Cycle: plays the loop range over and over (without one: the bar at the song position)");
+    cycleButton.setTooltip (cycleText);
+    ui::setHint (cycleButton, cycleText);
+    cycleButton.onClick = [this] { toggleCycle(); };
+}
+
+void MainComponent::toggleCycle()
+{
+    const auto& song = engine.getSong();
+    if (song.hasLoop())
+    {
+        engine.editSong ([] (Song& s) { s.loopOff = ! s.loopOff; }, false);
+        return;
+    }
+    // no range yet: BandLab's cycle region is one bar (B07: bar 1 at the song's start); here the bar at the song position
+    const auto bar = juce::jmax<std::int64_t> (1, song.barTicks());
+    const auto from = (std::int64_t) std::floor (engine.getTransport().positionTicks.load() / (double) bar) * bar;
+    engine.editSong ([from, bar] (Song& s) {
+        s.loopStart = from;
+        s.loopEnd = from + bar;
+        s.loopOff = false;
+    });
 }
 
 std::vector<juce::Component*> MainComponent::lookOnlyParts()
 {
     std::vector<juce::Component*> parts { &signatureBox, &quantBox, &saveStatus, &moreButton, &browserToggleButton, &backToArrangementButton, &captureButton,
-                                          &sessionRecordButton, &drawModeButton, &keyMapButton, &midiMapButton, &sessionViewButton, &arrangementViewButton };
+                                          &sessionRecordButton, &drawModeButton, &keyMapButton, &midiMapButton, &sessionViewButton, &arrangementViewButton, &cycleButton };
     if (simpleWorkflow != nullptr)
         if (auto* finish = simpleWorkflow->finishComponent(); finish != nullptr && finish->getParentComponent() == this)
             parts.push_back (finish);
@@ -175,6 +199,8 @@ void MainComponent::applyToolbarLook()
     playButton.setCorners (true, ! simple);
     stopButton.setCorners (! simple, ! simple);
     recordButton.setCorners (! simple, ! simple);
+    cycleButton.setLook (BL::capsule, sb::stopBox); // (Simple only)
+    cycleButton.setCorners (false, false);
     // the metronome: the first segment of the tempo capsule / Live's ring-and-dot box
     metronomeButton.setLook (fl ? BL::flTile : simple ? BL::capsule : BL::liveBox, simple ? 20.0f : fl ? flTileIconBox() : 13.0f);
     metronomeButton.setCorners (true, fl);
@@ -282,7 +308,7 @@ void MainComponent::layoutSimpleToolbar (juce::Rectangle<int> bar, int menuWidth
     }
 
     std::array<int, sb::partCount> widths {};
-    widths[(std::size_t) P::transport] = 3 * sb::segment + sb::timeWidth;
+    widths[(std::size_t) P::transport] = 4 * sb::segment + sb::timeWidth; // (round 190ld: + BandLab's Cycle)
     widths[(std::size_t) P::tempo] = sb::segment + sb::tempoWidth + sb::signatureWidth;
     widths[(std::size_t) P::key] = toolbarLayout.isShown (Group::key) ? sb::keyWidth : 0;
     // (round 190jj: BandLab's master volume slider with its meter, then LYNX's master pitch knob)
@@ -346,7 +372,8 @@ void MainComponent::layoutSimpleToolbar (juce::Rectangle<int> bar, int menuWidth
         switch (part)
         {
             case P::transport: // play | stop | record | the time (BandLab's transport capsule, at FL's transport place)
-                capsule (r.getX(), { { &playButton, sb::segment }, { &stopButton, sb::segment }, { &recordButton, sb::segment }, { &timeDisplay, sb::timeWidth } });
+                capsule (r.getX(), { { &playButton, sb::segment }, { &stopButton, sb::segment }, { &recordButton, sb::segment }, { &cycleButton, sb::segment },
+                                     { &timeDisplay, sb::timeWidth } });
                 transportArea = {};
                 break;
             case P::tempo: // metronome | tempo | time signature (BandLab's)
@@ -582,6 +609,8 @@ void MainComponent::updateLookFields()
         // round 190jj: BandLab's master meter behind the master volume (its rail repaints only when a bar moved a pixel)
         if (masterVolume.isVisible())
             masterVolume.tickMeter (juce::Time::getMillisecondCounterHiRes());
+        if (const auto on = engine.getSong().loopPlays(); cycleButton.getToggleState() != on) // round 190ld: lit while it cycles
+            cycleButton.setToggleState (on, juce::dontSendNotification);
         if (++saveStatusTicks >= 60) // every 2 s at the 30 Hz timer (the minutes in "Backed up 2 min ago")
         {
             saveStatusTicks = 0;
@@ -639,7 +668,8 @@ juce::Component* MainComponent::toolbarPartForSnapshot (const juce::String& name
         { "overdub", &blendButton }, { "capture", &captureButton }, { "sessionRecord", &sessionRecordButton }, { "punch", &punchButton },
         { "draw", &drawModeButton }, { "computerKeys", &typingPianoButton }, { "keyMap", &keyMapButton }, { "midiMap", &midiMapButton },
         { "cpu", &perfMeter }, { "more", &moreButton }, { "sessionView", &sessionViewButton }, { "arrangementView", &arrangementViewButton },
-        { "status", &saveStatus }, { "masterVolume", &masterVolume }, { "masterPitch", &masterPitch }, { "undo", &undoButton }, { "redo", &redoButton }
+        { "status", &saveStatus }, { "masterVolume", &masterVolume }, { "masterPitch", &masterPitch }, { "undo", &undoButton }, { "redo", &redoButton },
+        { "cycle", &cycleButton }, { "countIn", &countInButton }, { "waitInput", &waitInputButton }, { "midiLight", &midiLight } // (round 190ld)
     };
     if (name == "finish")
         return simpleWorkflow != nullptr ? simpleWorkflow->finishComponent() : nullptr;

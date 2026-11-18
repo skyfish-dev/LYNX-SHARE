@@ -28,6 +28,7 @@
 #include "ui/ExportDialog.h"
 #include "engine/AudioEngine.h"
 #include "ui/I18n.h"
+#include "ui/Icons.h"
 #include "ui/WorkflowExtras.h" // round 190iu (issue #191.2)
 #include "ui/Theme.h"
 
@@ -700,8 +701,20 @@ public:
         if (hit.track >= 0 && hit.scene >= 0 && e.x - columnX (hit.track) >= launchZone)
             if (const auto* grid = gridOf(); grid != nullptr)
             {
-                if (launcher::clipAt (*grid, hit.track, hit.scene) == nullptr)
-                    putPattern (hit.track, hit.scene, engine.getSong().currentPattern);
+                if (launcher::clipAt (*grid, hit.track, hit.scene) == nullptr && e.mods.isAltDown())
+                    putPattern (hit.track, hit.scene, engine.getSong().currentPattern); // (owner L2: Alt keeps the old way)
+                else if (launcher::clipAt (*grid, hit.track, hit.scene) == nullptr)
+                {
+                    // Live (owner decision L2, details DL-22, round 190ld): a double-click on an empty slot makes an empty
+                    // MIDI clip and shows it in the Detail View; the slot menu keeps "Put a pattern here"
+                    insertEmptyClip (hit.track, hit.scene);
+                    if (const auto* now = gridOf(); now != nullptr && launcher::clipAt (*now, hit.track, hit.scene) != nullptr)
+                    {
+                        selectedTrack = hit.track;
+                        selectedScene = hit.scene;
+                        notify (GridPick::openClip);
+                    }
+                }
                 else
                     notify (GridPick::openClip); // (round 183a: the clip in the Detail View)
             }
@@ -918,7 +931,7 @@ public:
             if (clip == nullptr)
                 hint.text = engine.isGridTrackArmed (hit.track) ? tr ("Clip Record button: [LMB] records a new clip into this slot")
                             : onButton ? tr ("Clip Stop button: [LMB] stops the clip playing on this track (at the launch quantisation)")
-                                       : tr ("Empty slot: drop a clip, a pattern or a sample here  [2xLMB] puts the current pattern here  [RMB] slot menu");
+                                       : tr ("Empty slot: drop a clip, a pattern or a sample here  [2xLMB] a new empty MIDI clip  [Alt][2xLMB] the current pattern  [RMB] slot menu");
             else
             {
                 hint.text = onButton ? tr ("Clip Launch button: [LMB] launches the clip (at the launch quantisation)  [Enter] launches the selected clip")
@@ -1783,6 +1796,14 @@ public:
             }
             }
         }
+        else if (view == nullptr || ! view->taken.load (std::memory_order_relaxed))
+            paintMiniature (g, song, t, juce::Rectangle<int> (cell.getX() + 17, cell.getY() + 2, right - cell.getX() - 17, cell.getHeight() - 4));
+        if (const auto icon = monitorIcon (t, engine.isGridTrackArmed (t)); icon != 0)
+        {
+            // (the icon right of the stop square, over the miniature's start)
+            const auto box = juce::Rectangle<float> ((float) cell.getX() + 17.0f, (float) cell.getCentreY() - 6.0f, 12.0f, 12.0f);
+            icons::draw (g, icon == 1 ? Icon::mic : Icon::keyboard, box, lv::text);
+        }
         if (! armShown)
             return;
         const auto armed = engine.isGridTrackArmed (t);
@@ -1790,6 +1811,34 @@ public:
         g.fillRect (arm);
         g.setColour (armed ? lv::ink : lv::text);
         g.fillEllipse (arm.withSizeKeepingCentre (7.0f, 7.0f));
+    }
+
+    // Round 190ld (DL-10): the Arrangement miniature of track `t` in `area` (13 px tall in Live): the position line at
+    // the left (#b5b5b5), then the Playlist clips of the next miniatureBeats beats as blocks in the clip colour
+    void paintMiniature (juce::Graphics& g, const Song& song, int t, juce::Rectangle<int> area) const
+    {
+        namespace lv = theme::livelook;
+        if (area.getWidth() < 4 || area.getHeight() < 4)
+            return;
+        const auto step = miniatureStepTicks (song);
+        const auto from = (double) juce::jmax (0.0, engine.getTransport().positionTicks.load (std::memory_order_relaxed));
+        const auto at = std::floor (from / (double) step) * (double) step; // (the shown position moves in whole steps)
+        const auto span = (double) step * miniatureSteps;
+        const auto trackColour = t < (int) song.playlistTracks.size() ? song.playlistTracks[(std::size_t) t].colour : 0u;
+        const auto blocks = area.withTrimmedLeft (1).toFloat();
+        for (const auto& clip : song.playlist)
+        {
+            if (clip.track != t || clip.length <= 0 || clip.muted || (double) (clip.start + clip.length) <= at || (double) clip.start >= at + span)
+                continue;
+            const auto x0 = blocks.getX() + blocks.getWidth() * (float) juce::jmax (0.0, ((double) clip.start - at) / span);
+            const auto x1 = blocks.getX() + blocks.getWidth() * (float) juce::jmin (1.0, ((double) (clip.start + clip.length) - at) / span);
+            const auto colour = trackColour != 0 ? juce::Colour (trackColour)
+                              : clip.kind == ClipKind::audio ? theme::colour::audioClip : theme::tame (PlaylistComponent::patternColour (song, clip.pattern));
+            g.setColour (colour);
+            g.fillRect (juce::Rectangle<float> (std::round (x0), blocks.getY(), juce::jmax (1.0f, std::round (x1) - std::round (x0)), blocks.getHeight()));
+        }
+        g.setColour (lv::text);
+        g.fillRect (area.getX(), area.getY() - 2, 1, area.getHeight() + 4); // (Live: the line runs the cell's height)
     }
 
     void paintScene (juce::Graphics& g, const ClipGrid& grid, int row, juce::Rectangle<int> r) const
@@ -2837,7 +2886,8 @@ private:
                 const auto from = cell.getX() + (int) std::floor (juce::jmin (a, b)) - 1, to = cell.getX() + (int) std::ceil (juce::jmax (a, b)) + 1;
                 repaint (juce::Rectangle<int> (from, cell.getBottom() - 3, to - from, 3).getIntersection (cell).getIntersection (cells).getIntersection (visible));
             }
-            if (liveLook() && was.oneShotSecond != now.oneShotSecond) // (round 190im, DL-9: a one-shot's time left)
+            if (liveLook() && (was.oneShotSecond != now.oneShotSecond || was.miniStep != now.miniStep || was.monitor != now.monitor))
+                // (round 190im, DL-9: a one-shot's time left; round 190ld: the miniature's position, the monitor icon)
                 repaint (juce::Rectangle<int> (x, cells.getBottom(), columnWidth, statusHeight + 1).getIntersection (visible));
             was = now;
         }
@@ -2881,6 +2931,8 @@ private:
         std::uint32_t blink = 0;      // the blink phase, while something in the column blinks
         std::uint64_t recordTick = 0; // while it records: the recording's start, the clock, a 33 ms tick
         int oneShotSecond = -1;       // round 190im (DL-9): a playing one-shot clip's seconds left
+        int miniStep = -1;            // round 190ld (DL-10): the song position's step in the Arrangement miniature
+        int monitor = 0;              // round 190ld (DL-11): 1 = the audio input is heard (mic), 2 = MIDI (keyboard)
     };
 
     ColumnView columnView (int t) const
@@ -2905,6 +2957,13 @@ private:
             }
             if (c.pending >= 0 || c.recordPending >= 0 || c.stopping)
                 c.blink = blinkPhaseNow();
+            if (liveLook())
+            {
+                c.monitor = monitorIcon (t, c.armed);
+                if (c.playing < 0 && c.recording < 0 && ! c.taken)
+                    c.miniStep = (int) std::floor (juce::jmax (0.0, engine.getTransport().positionTicks.load (std::memory_order_relaxed))
+                                                   / (double) miniatureStepTicks (engine.getSong()));
+            }
             if (c.recording >= 0)
                 c.recordTick = mixBits (mixBits (mixBits (1469598103934665603ull, bitsOf (v.recordFrom.load (std::memory_order_relaxed))),
                                                  bitsOf (state->clockNow.load (std::memory_order_relaxed))),
@@ -2913,6 +2972,29 @@ private:
         return c;
     }
     std::vector<ColumnView> columnViews; // [column] what the last tick saw
+
+    // Round 190ld (DL-10, Live 12 Info View: "a miniaturized view of the Arrangement clips if the track is playing back the
+    // Arrangement"; design190ia live-session.png y 558..574): the status cell of a track that plays its Playlist shows the
+    // stretch of the Arrangement from the song position on, its clips as blocks in their colour, the position as a 1 px
+    // line at the left. The stretch's length and its steps:
+    static constexpr int miniatureBeats = 16, miniatureSteps = 64;
+    static std::int64_t miniatureStepTicks (const Song& song)
+    {
+        return juce::jmax<std::int64_t> (1, (std::int64_t) miniatureBeats * song.beatTicks() / miniatureSteps);
+    }
+    // Round 190ld (DL-11, Live manual 7.3: "A microphone icon appears in an audio track that is set to monitor its input.
+    // A keyboard icon appears in a MIDI track"): 1 = the audio input is heard now, 2 = an armed MIDI track, 0 = none
+    int monitorIcon (int t, bool armed) const
+    {
+        const auto& song = engine.getSong();
+        if (engine.gridTrackInput (t) == AudioEngine::GridInput::midi)
+            return armed ? 2 : 0;
+        const auto insert = detailchain::forTrack (song, t).insert;
+        if (insert <= 0 || insert >= (int) song.mixer.size())
+            return 0;
+        const auto mode = song.mixer[(std::size_t) insert].monitor;
+        return mode == InputMonitor::on || (armed && mode != InputMonitor::off) ? 1 : 0;
+    }
 
     // round 190im (DL-9): a playing one-shot clip's (Loop off) time left in seconds at the song's tempo; −1: not one
     double oneShotSecondsLeft (int t, int scene, float progress) const

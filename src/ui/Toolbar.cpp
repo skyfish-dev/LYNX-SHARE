@@ -862,7 +862,7 @@ void PerformanceMeter::setValues (double cpu01, std::int64_t memoryBytes, int po
     juce::int64 sig = juce::roundToInt (cpuSmoothed * 100.0);
     sig = sig * 31 + juce::roundToInt (cpuSmoothed * (double) barBox().getWidth());
     sig = sig * 31 + (juce::int64) (memory / (1024 * 1024));
-    sig = sig * 31 + voices;
+    sig = sig * 31 + (secondView == framesPerSecond ? 100000 + fps : voices);
     sig = sig * 31 + juce::jmin (cpuHistoryCount, 2);
     for (std::size_t i = 0; i < cpuHistory.size(); ++i)
         sig = sig * 1000003 + (juce::int64) std::round (cpuHistory[i] * rows) * 7 + (juce::int64) i;
@@ -893,6 +893,11 @@ juce::Rectangle<float> PerformanceMeter::graphArea() const
     return box.getHeight() >= 11.0f ? box.withTrimmedTop (6.0f).reduced (1.0f, 0.0f) : juce::Rectangle<float>();
 }
 
+void PerformanceMeter::setFramesPerSecond (int framesPerSecondIn)
+{
+    fps = juce::jmax (0, framesPerSecondIn); // (painted with the next setValues, which compares what would change)
+}
+
 void PerformanceMeter::mouseDown (const juce::MouseEvent& e)
 {
     if (e.mods.isPopupMenu())
@@ -910,6 +915,21 @@ juce::PopupMenu PerformanceMeter::makeMenu()
             if (onRefreshChanged)
                 onRefreshChanged();
         });
+    // FL's "Misc" section (FL 2026 capture details190kn raw/f08): the voice count / FPS radio pair, then greyed info lines
+    menu.addSectionHeader (tr ("Misc"));
+    const std::pair<int, juce::String> views[] { { voiceCount, tr ("View voice count") }, { framesPerSecond, tr ("View FPS") } };
+    for (const auto& [id, name] : views)
+        menu.addItem (name, true, secondView == id, [this, id = id] {
+            secondView = id;
+            paintedSignature = -1;
+            repaint();
+            if (onRefreshChanged)
+                onRefreshChanged();
+        });
+    if (const auto [gdi, user] = guiHandles(); gdi >= 0)
+        menu.addItem (tr ("Handles: {0} (GDI) / {1} (USER)", { juce::String (gdi), juce::String (user) }), false, false, [] {});
+    if (const auto threads = threadCount(); threads > 0)
+        menu.addItem (tr ("Threads: {0}", { juce::String (threads) }), false, false, [] {});
     menu.addSeparator();
     menu.addItem (tr ("Plugin performance monitor..."), onOpenMonitor != nullptr, false, [this] {
         if (onOpenMonitor)
@@ -1046,23 +1066,34 @@ void PerformanceMeter::paint (juce::Graphics& g)
                 juce::Justification::centredLeft, false);
     g.setFont (caption);
     g.setColour (colour::textDisabled);
-    g.drawText (tr ("POLY"), row2.removeFromLeft (32), juce::Justification::centredLeft, false);
+    const auto showFps = secondView == framesPerSecond; // round 190ld: FL's "View FPS"
+    g.drawText (showFps ? tr ("FPS") : tr ("POLY"), row2.removeFromLeft (32), juce::Justification::centredLeft, false);
     g.setFont (number);
-    g.setColour (voices > 0 ? colour::textPrimary : colour::textSecondary);
-    g.drawText (juce::String (voices), row2, juce::Justification::centredRight, false);
+    const auto shown = showFps ? fps : voices;
+    g.setColour (shown > 0 ? colour::textPrimary : colour::textSecondary);
+    g.drawText (juce::String (shown), row2, juce::Justification::centredRight, false);
 }
 
 // --- MIDI activity light ---------------------------------------------------------------------------
 
-void MidiActivityLight::update (std::uint32_t count, const juce::StringArray& activeInputs)
+void MidiActivityLight::update (std::uint32_t count, const juce::StringArray& activeInputs, std::uint32_t projectLinked, std::uint32_t globalLinked)
 {
     const auto wasLit = litFrames > 0;
-    if (seenCount && count != lastCount)
+    const auto shownKind = paintedKind;
+    if (seenCount && (count != lastCount || projectLinked != lastProject || globalLinked != lastGlobal))
+    {
         litFrames = 6; // ~0.2 s after the last message
+        // (a link takes its message on the message thread a frame after the count: the link's colour wins)
+        kind = projectLinked != lastProject ? Kind::project : globalLinked != lastGlobal ? Kind::global
+             : (kind == Kind::project || kind == Kind::global) && wasLit ? kind : Kind::unhandled;
+    }
     else if (litFrames > 0)
         --litFrames;
     seenCount = true;
     lastCount = count;
+    lastProject = projectLinked;
+    lastGlobal = globalLinked;
+    paintedKind = kind;
 
     if (activeInputs != inputs)
     {
@@ -1070,8 +1101,17 @@ void MidiActivityLight::update (std::uint32_t count, const juce::StringArray& ac
         setTooltip (hintAt ({}).text);
     }
 
-    if (wasLit != (litFrames > 0))
+    if (wasLit != (litFrames > 0) || (litFrames > 0 && shownKind != kind))
         repaint();
+}
+
+void MidiActivityLight::beat (bool barStart)
+{
+    if (litFrames > 0 && (kind == Kind::project || kind == Kind::global || kind == Kind::unhandled) && litFrames > 3)
+        return; // (incoming MIDI just lit it: that stays readable)
+    kind = paintedKind = barStart ? Kind::bar : Kind::beat;
+    litFrames = 3; // a short blink (~0.1 s)
+    repaint();
 }
 
 void ChordPanel::setText (const juce::String& newText)
@@ -1352,13 +1392,17 @@ void MidiActivityLight::paint (juce::Graphics& g)
     const auto size = juce::jmin ((float) getWidth(), (float) getHeight()) * 0.36f;
     const auto led = getLocalBounds().toFloat().withSizeKeepingCentre (size, size);
     const auto lit = litFrames > 0;
+    // FL's colours (round 190ld): orange = a project link took it, blue = a global link (and the bar's first beat of
+    // the MIDI Sync light), green = no link used it (and the other beats)
+    const auto litColour = kind == Kind::project ? theme::colour::warning
+                         : kind == Kind::global || kind == Kind::bar ? theme::colour::info : theme::colour::ledOn;
 
     if (lit) // a soft glow around the lit light
     {
-        g.setColour (theme::colour::ledOn.withAlpha (0.25f));
+        g.setColour (litColour.withAlpha (0.25f));
         g.fillEllipse (led.expanded (size * 0.35f));
     }
-    g.setColour (lit ? theme::colour::ledOn : (inputs.isEmpty() ? theme::colour::bg4 : theme::colour::ledOff));
+    g.setColour (lit ? litColour : (inputs.isEmpty() ? theme::colour::bg4 : theme::colour::ledOff));
     g.fillEllipse (led);
     g.setColour (theme::colour::borderStrong);
     g.drawEllipse (led, 1.0f);
@@ -1373,7 +1417,7 @@ void MidiActivityLight::mouseUp (const juce::MouseEvent& e)
 ui::Hint MidiActivityLight::hintAt (juce::Point<int>)
 {
     ui::Hint h;
-    h.text = tr ("MIDI input: blinks when a connected device sends MIDI. Click to reconnect the MIDI inputs.");
+    h.text = tr ("MIDI input: blinks when a connected device sends MIDI: orange = a project link used it, blue = a global link, green = nothing linked. With master sync sent it blinks on each beat, blue on each bar. Click to reconnect the MIDI inputs.");
     h.text << "  " << (inputs.isEmpty() ? tr ("No MIDI input is open.") : tr ("Open: {0}", { inputs.joinIntoString (", ") }));
     return h;
 }
@@ -2569,6 +2613,7 @@ ui::Hint SaveStatus::hintAt (juce::Point<int>)
  #define PSAPI_VERSION 2 // GetProcessMemoryInfo from kernel32 (K32GetProcessMemoryInfo): no extra library
  #include <windows.h>
  #include <psapi.h>
+ #include <tlhelp32.h>
 #endif
 
 std::int64_t lynx::toolbar::PerformanceMeter::processPrivateBytes()
@@ -2580,6 +2625,40 @@ std::int64_t lynx::toolbar::PerformanceMeter::processPrivateBytes()
     return 0;
 #else
     return processMemoryBytes();
+#endif
+}
+
+int lynx::toolbar::PerformanceMeter::threadCount()
+{
+#if JUCE_WINDOWS
+    const auto snap = CreateToolhelp32Snapshot (TH32CS_SNAPTHREAD, 0);
+    if (snap == INVALID_HANDLE_VALUE)
+        return 0;
+    THREADENTRY32 entry {};
+    entry.dwSize = sizeof (entry);
+    int n = 0;
+    const auto self = GetCurrentProcessId();
+    for (auto ok = Thread32First (snap, &entry); ok; ok = Thread32Next (snap, &entry))
+        if (entry.th32OwnerProcessID == self)
+            ++n;
+    CloseHandle (snap);
+    return n;
+#elif JUCE_LINUX
+    for (const auto& line : juce::StringArray::fromLines (juce::File ("/proc/self/status").loadFileAsString()))
+        if (line.startsWith ("Threads:"))
+            return line.fromFirstOccurrenceOf (":", false, false).trim().getIntValue();
+    return 0;
+#else
+    return 0;
+#endif
+}
+
+std::pair<int, int> lynx::toolbar::PerformanceMeter::guiHandles()
+{
+#if JUCE_WINDOWS
+    return { (int) GetGuiResources (GetCurrentProcess(), 0 /* GR_GDIOBJECTS */), (int) GetGuiResources (GetCurrentProcess(), 1 /* GR_USEROBJECTS */) };
+#else
+    return { -1, -1 };
 #endif
 }
 
