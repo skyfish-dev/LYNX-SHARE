@@ -301,17 +301,25 @@ void RootComponent::openProject()
                           {
                               const auto url = fc.getURLResult();
 
-                              if (url.isEmpty())
-                                  return;
-
-                              juce::String error;
-
-                              if (! audio.loadProjectURL (url, error))
-                                  juce::AlertWindow::showMessageBoxAsync (juce::MessageBoxIconType::WarningIcon,
-                                                                          "Could not open " + url.getFileName(), error);
-
-                              refreshLabels();
-                              grid.repaint();
+                              if (url.isNotEmpty())
+                                  openProjectURL (url);
                           });
+}
+
+void RootComponent::openProjectURL (const juce::URL& url)
+{
+    juce::String error;
+
+    if (! audio.loadProjectURL (url, error))
+        juce::AlertWindow::showMessageBoxAsync (juce::MessageBoxIconType::WarningIcon,
+                                               "Could not open " + url.getFileName(), error);
+
+    refreshLabels();
+    grid.repaint();
+}
+
+void RootComponent::openProjectFile (const juce::File& file)
+{
+    openProjectURL (juce::URL (file));
 }
 } // namespace lynx::ios

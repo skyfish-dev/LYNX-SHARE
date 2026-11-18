@@ -16,7 +16,9 @@ public:
     {
         setUsingNativeTitleBar (false);
         setTitleBarHeight (0);
-        setContentOwned (new lynx::ios::RootComponent (engine), true);
+        auto* root = new lynx::ios::RootComponent (engine);
+        content = root;
+        setContentOwned (root, true);
         setResizable (false, false);
 
         // iOS always presents the peer full screen; the bounds are only a fallback for the display query
@@ -29,11 +31,16 @@ public:
         setVisible (true);
     }
 
+    lynx::ios::RootComponent& root() { return *content; }
+
     void closeButtonPressed() override
     {
         if (auto* app = juce::JUCEApplication::getInstance())
             app->systemRequestedQuit();
     }
+
+private:
+    lynx::ios::RootComponent* content = nullptr;
 };
 
 class LynxApplication final : public juce::JUCEApplication
@@ -56,6 +63,17 @@ public:
         {
             if (engine != nullptr && ! engine->open())
                 DBG ("LYNX: audio device did not open: " << engine->status());
+
+            // the Simulator smoke test passes a project in the environment (simctl launch SIMCTL_CHILD_...)
+            const auto toOpen = juce::SystemStats::getEnvironmentVariable ("LYNX_IOS_OPEN", {});
+
+            if (toOpen.isNotEmpty() && window != nullptr)
+            {
+                const juce::File file (toOpen);
+
+                if (file.existsAsFile())
+                    window->root().openProjectFile (file);
+            }
         });
     }
 

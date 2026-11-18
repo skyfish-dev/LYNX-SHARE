@@ -39,10 +39,14 @@ public:
     void paint (juce::Graphics&) override;
     void resized() override;
 
+    // Opens `file` as if it had been picked in the chooser (also used by the Simulator smoke test).
+    void openProjectFile (const juce::File& file);
+
 private:
     void timerCallback() override;
     void refreshLabels();
     void openProject();
+    void openProjectURL (const juce::URL& url);
 
     AudioEngine& audio;
 

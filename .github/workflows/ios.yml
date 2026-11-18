@@ -132,6 +132,32 @@ jobs:
           fi
           echo "LYNX is running"
 
+      - name: Open a project in the Simulator
+        run: |
+          set -euo pipefail
+          UDID=$(xcrun simctl list devices booted -j | python3 -c '
+          import json, sys
+          devices = json.load (sys.stdin)["devices"]
+          for runtime in devices:
+              for device in devices[runtime]:
+                  print (device["udid"])
+                  raise SystemExit
+          ')
+          echo "Simulator: $UDID"
+          CONTAINER=$(xcrun simctl get_app_container "$UDID" com.ka1-s.lynx.ios data)
+          mkdir -p "$CONTAINER/Documents"
+          cp .github/fixtures/demo.lynx "$CONTAINER/Documents/demo.lynx"
+          xcrun simctl terminate "$UDID" com.ka1-s.lynx.ios || true
+          SIMCTL_CHILD_LYNX_IOS_OPEN="$CONTAINER/Documents/demo.lynx" \
+            xcrun simctl launch "$UDID" com.ka1-s.lynx.ios
+          sleep 10
+          xcrun simctl io "$UDID" screenshot lynx-project.png
+          if ! xcrun simctl spawn "$UDID" launchctl list | grep -q "com.ka1-s.lynx.ios"; then
+            echo "LYNX stopped after opening the demo project"
+            exit 1
+          fi
+          echo "LYNX is running with demo.lynx"
+
       - name: Crash logs
         if: failure()
         run: |
@@ -142,6 +168,8 @@ jobs:
         if: always()
         with:
           name: LYNX-simulator-screenshot
-          path: lynx-screen.png
+          path: |
+            lynx-screen.png
+            lynx-project.png
           if-no-files-found: warn
           retention-days: 30
